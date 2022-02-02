@@ -1,5 +1,4 @@
 from datetime import date
-from multiprocessing import allow_connection_pickling
 from typing import Optional
 from uuid import uuid4
 
@@ -21,6 +20,7 @@ class Giveaway(BaseModel):
     prizeType: str
     prizeAmount: float
     checks: Conditions
+    participants: Optional[list[str]]
 
     class Config:
         allow_population_by_field_name = True
