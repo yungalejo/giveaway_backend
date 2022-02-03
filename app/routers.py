@@ -11,9 +11,10 @@ router = APIRouter(prefix="/giveaways", tags=["giveaways"])
 
 @router.post("/create")
 async def create_giveaway(giveaway: Giveaway, request: Request):
-    collection = request.app.mongodb.giveaway_history
+    hist = request.app.mongodb.giveaway_history
+    giveaway.status = "active"
     giveaway = jsonable_encoder(giveaway)
-    await collection.insert_one(giveaway)
+    await hist.insert_one(giveaway)
     return giveaway
 
 
