@@ -2,59 +2,23 @@ import tweepy
 import os
 import json
 from dotenv import load_dotenv
+import random
 
 load_dotenv("../../.env")
 
 BEARER_TOKEN = os.getenv("BEARER_TOKEN")
 client = tweepy.Client(BEARER_TOKEN, wait_on_rate_limit=True)
 
+
 # +
-# def is_follower(user_id, tweet_id, token=None):
-#     followed_id = get_author_id(tweet_id)
-#     user_following = client.get_users_following(
-#         user_id, max_results=1000, pagination_token=token
-#     )
-
-#     if user_following.data != None:
-#         following = [follow.id for follow in user_following.data]
-
-#     if followed_id in following:
-#         return True
-#     elif "next_token" in user_following.meta:
-#         next_token = user_following.meta["next_token"]
-#         return is_follower(user_id, followed_id, next_token)
-#     else:
-#         return False
-
-
-def likes_tweet(user_id, tweet_id, token=None, i=0):
-    if i > 4:
-        return False
-
-    user_liked_tweets = client.get_liked_tweets(user_id, pagination_token=token)
-
-    if user_liked_tweets.data is not None:
-        liked_tweets = [tweet.id for tweet in user_liked_tweets.data]
-        if int(tweet_id) in liked_tweets:
-            return True
-
-    elif "next_token" in user_liked_tweets.meta:
-        next_token = user_liked_tweets.meta["next_token"]
-        return likes_tweet(user_id, tweet_id, token=next_token, i=i + 1)
-
-    else:
-        return False
-
-
-# -
-
-
 class activeGiveaway:
-    def __init__(self, tweet_id):
-        self.tweet_id = tweet_id
-        self.__get_metrics()
+    def __init__(self, tweet_id, addtl_username=None):
 
-    def __get_metrics(self):
+        self.tweet_id = tweet_id
+        self.addtl_id = None
+        self.__get_metrics(addtl_username)
+
+    def __get_metrics(self, addtl=None):
 
         tweet = client.get_tweet(
             self.tweet_id, expansions="author_id", tweet_fields="public_metrics"
@@ -65,17 +29,23 @@ class activeGiveaway:
         self.like_count = tweet.data.public_metrics["like_count"]
 
         user = client.get_user(id=self.author_id, user_fields="public_metrics")
-        self.follower_count = user.data.public_metrics["followers_count"]
-
-    def get_data(self, call, token=None, user_ids=[]):
-        calls = {
-            "rts": client.get_retweeters,
-            "likes": client.get_liking_users,
-            "follows": client.get_users_followers,
+        self.follower_count = {
+            self.author_id: user.data.public_metrics["followers_count"]
         }
-        id_, num_results = (
-            (self.author_id, 1000) if call == "followers" else (self.tweet_id, 100)
-        )
+
+        if addtl != None:
+            user = client.get_user(username=addtl, user_fields="public_metrics").data
+            self.follower_count[user.id] = user.public_metrics["followers_count"]
+            self.addtl_id = user.id
+
+    def __get_data(self, call, id_, token=None, user_ids=[]):
+        calls = {
+            "retweet": client.get_retweeters,
+            "like": client.get_liking_users,
+            "follow": client.get_users_followers,
+        }
+
+        num_results = 1000 if call == "followers" else 100
 
         users = calls[call](id_, pagination_token=token, max_results=num_results)
 
@@ -86,11 +56,110 @@ class activeGiveaway:
             total = user_ids
 
         if "next_token" in users.meta:
-            return self.get_data(call, users.meta["next_token"], total)
+            return self.__get_data(call, id_, users.meta["next_token"], total)
 
         setattr(self, call, total)
 
         return getattr(self, call)
 
+    def __check_conditions(self, call, follower_id, user_id=None, user_ids=[], token=None):
+        calls = {
+            "is_following": client.get_users_following,
+            "is_follower": client.get_users_followers,
+            "likes_tweet": client.get_liking_users,
+        }
 
-tst = activeGiveaway(1486266855228649476)
+        if call == "is_following":
+            id_ = follower_id
+            num_results = 1000
+        elif call == "is_follower":
+            id_ = user_id
+            num_results = 1000
+        elif call == "likes_tweet":
+            id_ = self.tweet_id
+            num_results = 100
+
+        users = calls[call](id_, pagination_token=token, max_results=num_results)
+
+        if users.data != None:
+            new_user_ids = [user.id for user in users.data]
+            total = user_ids + new_user_ids
+        else:
+            total = user_ids
+
+        if call == "is_following" and user_id in total:
+            return True
+        elif call == "is_follower" or calls == "likes_tweet":
+            if follower_id in total:
+                return True
+
+        if "next_token" in users.meta:
+            return self.__following_TF(call, id_, users.meta["next_token"], total)
+
+        return False
+
+    def is_follower(self, follower_id, user_id):
+        # this function determines if potential winners following count is less than the Giveaway hosts follower count for efficiency
+        
+        ids = {"follower_id": follower_id, "user_id": user_id}
+        following_count = client.get_user(
+            id=follower_id, user_fields="public_metrics"
+        ).data.public_metrics["following_count"]
+        follower_count = self.follower_count[user_id]
+        is_following = self.__check_conditions
+
+        following_bool = (
+            is_following("is_following", **ids)
+            if following_count < follower_count
+            else is_following("is_follower", **ids)
+        )
+
+        return following_bool
+
+#     def choose_winner(self, conditions):
+#         get_data = self.__get_data
+#         check_conditions = self.__check_conditions
+
+#         if all(conditions.values()):
+#             get_data("rts", self.tweet_id)
+#             random_id = random.choice(self.retweet)
+#             if check_conditions("likes_tweet", random_id):
+#                 if follow_condition = is_follower(random_id, self.author_id):
+#                     if addtl_condition = is_follower(random_id, self.addtl_id):
+#                         winner = random_id
+#                         return winner 
+                    
+    
+        
+        
+
+#         if conditions["retweet"] == True:
+#             get_data("retweet", self.tweet_id)
+#             random_id = random.choice(self.retweet)
+#             if conditions["like"] == True and check_conditions("likes_tweet", random_id):
+#                 if conditions["follow"]==True and is_follower(random_id, self.author_id):
+#                     if conditions['addtl'] and is_follower(random_id, self.addtl_id):
+#                         winner = random_id
+#                         return winner 
+#                     elif conditions['addtl']==False:
+                        
+                 
+            
+            
+#         elif conditions["like"]==True:
+#             get_data("like", self.tweet_id)
+        
+#         elif conditions["follow"]==True:
+#             get_data("follow", self.author_id)
+        
+#         elif conditions["addtl"] == True:
+#             get_data("follow", self.addtl_id)
+            
+
+ 
+            
+            
+            
+
+# +
+# tst = activeGiveaway(1489339336554332162, 'probablysymbio')

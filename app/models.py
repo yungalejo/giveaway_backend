@@ -29,6 +29,7 @@ class Giveaway(BaseModel):
     discord: Optional[str]
     prizeType: str = "N/A"
     prizeAmount: float = 0
+    addtl: Optional[str]
     checks: Conditions
     participants: Optional[list[str]]
 
