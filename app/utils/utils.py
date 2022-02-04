@@ -10,7 +10,6 @@ BEARER_TOKEN = os.getenv("BEARER_TOKEN")
 client = tweepy.Client(BEARER_TOKEN, wait_on_rate_limit=True)
 
 
-# +
 class activeGiveaway:
     def __init__(self, tweet_id, addtl_username=None):
 
@@ -41,11 +40,12 @@ class activeGiveaway:
     def __get_data(self, call, id_, token=None, user_ids=[]):
         calls = {
             "retweet": client.get_retweeters,
-            "like": client.get_liking_users,
+            "likes_tweet": client.get_liking_users,
             "follow": client.get_users_followers,
+            "addtl_follow": client.get_users_followers,
         }
 
-        num_results = 1000 if call == "followers" else 100
+        num_results = 1000 if call == "follow" else 100
 
         users = calls[call](id_, pagination_token=token, max_results=num_results)
 
@@ -62,11 +62,14 @@ class activeGiveaway:
 
         return getattr(self, call)
 
-    def __check_conditions(self, call, follower_id, user_id=None, user_ids=[], token=None):
+    def __check_conditions(
+        self, call, follower_id, user_id=None, user_ids=[], token=None
+    ):
         calls = {
             "is_following": client.get_users_following,
             "is_follower": client.get_users_followers,
             "likes_tweet": client.get_liking_users,
+            "retweet": client.get_retweeters,
         }
 
         if call == "is_following":
@@ -75,7 +78,7 @@ class activeGiveaway:
         elif call == "is_follower":
             id_ = user_id
             num_results = 1000
-        elif call == "likes_tweet":
+        else:
             id_ = self.tweet_id
             num_results = 100
 
@@ -89,77 +92,76 @@ class activeGiveaway:
 
         if call == "is_following" and user_id in total:
             return True
-        elif call == "is_follower" or calls == "likes_tweet":
+        elif any([call == "is_follower", call == "likes_tweet", call == "retweet"]):
             if follower_id in total:
                 return True
 
         if "next_token" in users.meta:
-            return self.__following_TF(call, id_, users.meta["next_token"], total)
+            return self.__check_conditions(call, id_, users.meta["next_token"], total)
 
         return False
 
-    def is_follower(self, follower_id, user_id):
+    def is_follower(self, user_id, follower_id):
         # this function determines if potential winners following count is less than the Giveaway hosts follower count for efficiency
-        
-        ids = {"follower_id": follower_id, "user_id": user_id}
+
+        ids = {"user_id": user_id, "follower_id": follower_id}
         following_count = client.get_user(
             id=follower_id, user_fields="public_metrics"
         ).data.public_metrics["following_count"]
         follower_count = self.follower_count[user_id]
-        is_following = self.__check_conditions
+        check_condition = self.__check_conditions
 
         following_bool = (
-            is_following("is_following", **ids)
+            check_condition("is_following", **ids)
             if following_count < follower_count
-            else is_following("is_follower", **ids)
+            else check_condition("is_follower", **ids)
         )
 
         return following_bool
 
-#     def choose_winner(self, conditions):
-#         get_data = self.__get_data
-#         check_conditions = self.__check_conditions
+    def choose_winner(self, conditions):
 
-#         if all(conditions.values()):
-#             get_data("rts", self.tweet_id)
-#             random_id = random.choice(self.retweet)
-#             if check_conditions("likes_tweet", random_id):
-#                 if follow_condition = is_follower(random_id, self.author_id):
-#                     if addtl_condition = is_follower(random_id, self.addtl_id):
-#                         winner = random_id
-#                         return winner 
-                    
-    
-        
-        
+        get_data = self.__get_data
+        check_condition = self.__check_conditions
 
-#         if conditions["retweet"] == True:
-#             get_data("retweet", self.tweet_id)
-#             random_id = random.choice(self.retweet)
-#             if conditions["like"] == True and check_conditions("likes_tweet", random_id):
-#                 if conditions["follow"]==True and is_follower(random_id, self.author_id):
-#                     if conditions['addtl'] and is_follower(random_id, self.addtl_id):
-#                         winner = random_id
-#                         return winner 
-#                     elif conditions['addtl']==False:
-                        
-                 
-            
-            
-#         elif conditions["like"]==True:
-#             get_data("like", self.tweet_id)
-        
-#         elif conditions["follow"]==True:
-#             get_data("follow", self.author_id)
-        
-#         elif conditions["addtl"] == True:
-#             get_data("follow", self.addtl_id)
-            
+        attributes = {
+            "retweet": self.tweet_id,
+            "likes_tweet": self.tweet_id,
+            "follow": self.author_id,
+            "addtl_follow": self.addtl_id,
+        }
 
- 
-            
-            
-            
+        def random_choice(attributes):
+            for attr in attributes:
+                try:
+                    ids = getattr(self, attr)
+                    return random.choice(ids)
+                except:
+                    pass
 
-# +
-# tst = activeGiveaway(1489339336554332162, 'probablysymbio')
+        for condition in attributes:
+            try:
+                if conditions[condition] == True:
+                    if "random_id" in locals():
+                        if any([condition == "follow", condition == "addtl_follow"]):
+                            id_ = attributes[condition]
+                            if self.is_follower(id_, random_id):
+                                # condition met, continue to check remaining conditions
+                                pass
+                            else:
+                                # random_id does not meet condition, choose new random_id
+                                random_id = random_choice(attributes)
+
+                        else:
+                            if check_condition(condition, random_id):
+                                pass
+                            else:
+                                random_id = random_choice(attributes)
+                    else:
+                        get_data(condition, attributes[condition])
+                        random_id = random_choice(attributes)
+            except:
+                pass
+
+        self.winner = random_id
+        return self.winner
