@@ -3,6 +3,7 @@ import os
 import json
 from dotenv import load_dotenv
 import random
+import asyncio
 
 load_dotenv("../../.env")
 
@@ -11,32 +12,32 @@ client = tweepy.Client(BEARER_TOKEN, wait_on_rate_limit=True)
 
 
 class GiveawayFunc:
-    def __init__(self, tweet_id, addtl_username=None):
-        self.tweet_id = tweet_id
-        self.addtl_id = None
+    def __init__(self, giveaway):
+
+        self.giveaway = giveaway
+        self.tweet_id = giveaway["tweet_id"]
+        self.conditions = giveaway["conditions"]
         self.attempted_ids = 0
-        self.__get_metrics(addtl_username)
-
-    def __get_metrics(self, addtl=None):
-        tweet = client.get_tweet(
-            self.tweet_id, expansions="author_id", tweet_fields="public_metrics"
-        )
-
-        self.author_id = tweet.includes["users"][0].id
-        self.retweet_count = tweet.data.public_metrics["retweet_count"]
-        self.like_count = tweet.data.public_metrics["like_count"]
-
-        user = client.get_user(id=self.author_id, user_fields="public_metrics")
-        self.follower_count = {
-            self.author_id: user.data.public_metrics["followers_count"]
+        self.__get_metrics()
+        self.data_retreival_status = {
+            "retweet": None,
+            "likes_tweet": None,
+            "follow": None,
         }
 
-        if addtl != None:
-            user = client.get_user(username=addtl, user_fields="public_metrics").data
-            self.follower_count[user.id] = user.public_metrics["followers_count"]
+    def __get_metrics(self):
+        tweet = client.get_tweet(self.tweet_id, expansions="author_id")
+        self.author_id = tweet.includes["users"][0].id
+
+        if self.giveaway["addtl_username"] != None:
+            user_name = self.giveaway["addtl_username"]
+            user = client.get_user(
+                username=user_name, user_fields="public_metrics"
+            ).data
+            self.addtl_count = user.public_metrics["followers_count"]
             self.addtl_id = user.id
 
-    def get_data(self, call, id_, token=None, user_ids=[]):
+    def get_data(self, call, id_, user_ids=[], token=None):
         calls = {
             "retweet": client.get_retweeters,
             "likes_tweet": client.get_liking_users,
@@ -46,43 +47,50 @@ class GiveawayFunc:
 
         num_results = 1000 if call == "follow" else 100
 
-        users = calls[call](id_, pagination_token=token, max_results=num_results)
-        
-
+        try:
+            users = calls[call](id_, pagination_token=token, max_results=num_results)
+        except Exception as e:
+            print(e)
+            return
 
         if users.data != None:
             new_user_ids = [user.id for user in users.data]
             total = user_ids + new_user_ids
         else:
             total = user_ids
-            
-            
-        print(users.meta, "next_token" in users.meta)
-        if "next_token" in users.meta:
-            return self.get_data(call, id_, users.meta["next_token"], total)
+
+        print(users.meta)
 
         setattr(self, call, total)
 
+        if "next_token" in users.meta:
+            return self.get_data(call, id_, total, users.meta["next_token"])
+
+        # update mongodb to contain all entries
+        # self.mongodb_collection.participant_data()
+        self.data_retreival_status[call] = "complete"
         return getattr(self, call)
 
-    def is_follower(
-        self, follower_id, user_id, user_ids=[], token=None, count_total=False
-    ):
-        assert follower_id != user_id
-        
-        follower = client.get_user(id=follower_id, user_fields="public_metrics")
-        following_count = follower.data.public_metrics["following_count"]
-        follower_count = self.follower_count[user_id]
+    def __is_follower(self, participant_id, user_id, user_ids=[], token=None):
+        # checks if potential winner follows additional account (neccesary due to twitter API rate limitations)
+        assert participant_id != user_id
+        participant = client.get_user(id=participant_id, user_fields="public_metrics")
+        following_count = participant.data.public_metrics["following_count"]
+        follower_count = self.addtl_count
 
-        call = "is_following" if following_count < follower_count else "is_follower"
+        call = (
+            "accounts_participant_follows"
+            if following_count < follower_count
+            else "users_followers"
+        )
 
         calls = {
-            "is_following": client.get_users_following,
-            "is_follower": client.get_users_followers,
+            "accounts_participant_follows": client.get_users_following,
+            "users_followers": client.get_users_followers,
         }
 
-        id_ = follower_id if call == "is_following" else user_id
-        
+        id_ = participant_id if call == "accounts_participant_follows" else user_id
+
         users = calls[call](id_, pagination_token=token, max_results=1000)
 
         if users.data != None:
@@ -91,121 +99,124 @@ class GiveawayFunc:
         else:
             total = user_ids
 
-        if id_ == self.author_id:
-            self.follow = total
-        elif id_ == self.addtl_id:
+        if call == "users_followers":
             self.addtl_follow = total
 
-        if call == "is_following" and user_id in total:
-            return True
-        elif call == "is_follower" and follower_id in total:
+        if participant_id in total:
             return True
 
         if users.meta["result_count"] >= 900:
-            return self.is_follower(call, id_, users.meta["next_token"], total)
+            return self.__is_follower(
+                participant_id, user_id, total, users.meta["next_token"]
+            )
 
         return False
 
-    def __random_choice(self, conditions):
-        # this function is to bypass all the possible combinations of conditions by trying all of the options]
-        attributes = {
-            "retweet": self.tweet_id,
-            "likes_tweet": self.tweet_id,
-            "follow": self.author_id,
-            "addtl_follow": self.addtl_id,
-        }
-        for i in attributes:
-            # turn existing data into sets
-            if conditions[i] == True:
-                try:
+    def __random_choice(self):
+        conditions = self.conditions
+        for i in conditions:
+            if conditions[i]:
+                try:  # turn existing data into sets
                     locals()[i] = set(getattr(self, i))
                 except:
                     if i in ["retweet", "likes_tweet"]:
-                        self.get_data(i, attributes[i])
-                        locals()[i] = set(getattr(self, i))
+                        id_ = self.tweet_id
+                    if i == "follow":
+                        id_ = self.author_id
 
-        sets = [i for i in attributes if locals()[i] in locals()]
-        participants = set.intersection(*sets)
+                    self.get_data(i, id_)
+                    locals()[i] = set(getattr(self, i))
 
-        for attr in attributes:
-            try:
-                if attr in ["retweet", "likes_tweet"]:
-                    random_choice = random.choice(participants)
-                else:
-                    ids = getattr(self, attr)
-                    random_choice = random.choice(ids)
-            except:
-                pass
-            
-        return random_choice
+        locals_ = locals()
+        sets = [locals_[i] for i in conditions if i in locals_]
+        participants = list(set.intersection(*sets)) if sets != [] else None
 
-    def get_random_id(self, conditions, random_id=None, attempts=[]):
+        try:
+            return random.choice(participants)
+        except:
+            pass
 
-        get_data = self.__get_data
+    def get_random_id(self, random_id=None, attempts=[]):
+        conditions = self.conditions
+        get_data = self.get_data
         is_follower = self.__is_follower
         random_choice = self.__random_choice
 
-        follow_attr = {
-            "follow": self.author_id,
-            "addtl_follow": self.addtl_id,
-        }
-
         if random_id == None:
-            random_id = random_choice(conditions)
+            random_id = random_choice()
 
-        for condition in ["follow", "addtl_follow"]:
-            if conditions[condition]:
-                if random_id != None:
-                    id_ = follow_attr[condition]
-                    if is_follower(random_id, id_):
-                        pass
-                    else:
-                        attempts.append(random_id)
-                        new_random_id = random_choice(conditions)
-                        while new_random_id in attempts:
-                            new_random_id = random_choice(conditions)
-                        return self.get_random_id(conditions, random_id, attempts)
-
+        if conditions["addtl_follow"]:
+            if random_id != None:
+                if is_follower(random_id, self.addtl_id):
+                    pass
                 else:
-                    get_data(condition, follow_attr[condition])
-                    random_id = random_choice(conditions)
+                    attempts.append(random_id)
+                    new_random_id = random_choice()
+                    while new_random_id in attempts:
+                        new_random_id = random_choice()
+                    return self.get_random_id(conditions, random_id, attempts)
+
+            else:
+                get_data("addtl_flow", self.addtl_id)
+                random_id = random_choice()
 
         return random_id
 
+
+class GiveawayClass(GiveawayFunc):
+    async def start_giveaway(self):
+        # create giveaway and begin calling twitter API to accumulate all followers in database
+        if self.conditions["follow"]:
+            self.get_data("follow", self.author_id)
+        self.giveaway["follow"] = self.follow
+        return giveaway
+
+    def choose_winner(self, num_winners=1):
+        assert num_winners <= 5
+        if self.data_retreival_status["follow"] == "complete":
+            # add up to 1000 new followers since creation of giveaway if the API call was completed
+            new_followers = client.get_users_followers(self.author_id, max_results=1000)
+            new_followers = set([user.id for user in new_followers.data])
+            current_followers = set(self.follow)
+            self.follow = list(
+                current_followers | new_followers
+            )  # updated follower list
+            self.data_retreival_status["follow"] == "updated"
+
+        self.winners = []
+        i = 0
+        while len(self.winners) < num_winners:
+            if i == 20:
+                return "Program was not able to find winner(s) that meet the conditions requested"
+            winner_id = self.get_random_id()
+            winner = client.get_user(id=winner_id).data
+            winner = {"id": winner.id, "username": winner.name}
+            if winner not in self.winners:
+                self.winners.append(winner)
+            i += 1
+
+        self.giveaway["winners"] = self.winners
+
+        return self.winners
+
+    def instant_winner():
+        pass
+
+    def end_giveaway():
+        pass
+
+
 # +
-# class GiveawayClass(GiveawayFunc):
-    
-#     def start_giveaway():
-        
-    
-#     def choose_winner(self, conditions):
-#         random_choice = self.__random_choice
-#         is_follower = self.__is_follower  
-#         get_random_id = self.get_random_id
+conditions = {
+    "retweet": True,
+    "likes_tweet": True,
+    "follow": True,
+    "addtl_follow": False,
+}
 
-#         random_id = get_random_id(conditions)
-
-#         if conditions["addtl"] == True:
-#             follow_bool, total_checked = is_follower(
-#                 random_id, self.addtl_id,  count_total=True
-#             )
-#             if follow_bool:
-#                 pass
-#             else:
-#                 self.attempted_ids += total_checked
-#                 count = min(
-#                     self.following_count[random_id], self.follower_count[self.addtl_id]
-#                 )
-#                 if self.attempted_ids >= count:
-#                     message = (
-#                         "There is no particpant that meets the required conditions"
-#                     )
-#                     return message
-#                 else:
-#                     return self.choose_winner(conditions)
-
-#         self.winner = random_id
-#         return self.winner
-    
-#     def end_giveaway():
-        
+giveaway = {
+    "tweet_id": 1489647967699185667,
+    "conditions": conditions,
+    "addtl_username": None,
+}
+tst = GiveawayClass(giveaway)
