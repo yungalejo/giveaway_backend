@@ -1,9 +1,9 @@
 import tweepy
 import os
 import json
-from dotenv import load_dotenv
 import random
 import asyncio
+from dotenv import load_dotenv
 
 load_dotenv("../../.env")
 
@@ -66,8 +66,6 @@ class GiveawayFunc:
         if "next_token" in users.meta:
             return self.get_data(call, id_, total, users.meta["next_token"])
 
-        # update mongodb to contain all entries
-        # self.mongodb_collection.participant_data()
         self.data_retreival_status[call] = "complete"
         return getattr(self, call)
 
@@ -76,11 +74,10 @@ class GiveawayFunc:
         assert participant_id != user_id
         participant = client.get_user(id=participant_id, user_fields="public_metrics")
         following_count = participant.data.public_metrics["following_count"]
-        follower_count = self.addtl_count
 
         call = (
             "accounts_participant_follows"
-            if following_count < follower_count
+            if following_count < self.follower_count
             else "users_followers"
         )
 
@@ -137,34 +134,34 @@ class GiveawayFunc:
             pass
 
     def get_random_id(self, random_id=None, attempts=[]):
-        conditions = self.conditions
-        get_data = self.get_data
-        is_follower = self.__is_follower
         random_choice = self.__random_choice
 
         if random_id == None:
             random_id = random_choice()
 
-        if conditions["addtl_follow"]:
+        if self.conditions["addtl_follow"]:
             if random_id != None:
-                if is_follower(random_id, self.addtl_id):
+                if self.__is_follower(random_id, self.addtl_id):
                     pass
                 else:
                     attempts.append(random_id)
                     new_random_id = random_choice()
                     while new_random_id in attempts:
                         new_random_id = random_choice()
-                    return self.get_random_id(conditions, random_id, attempts)
-
+                    return self.get_random_id(self.conditions, random_id, attempts)
             else:
-                get_data("addtl_flow", self.addtl_id)
+                self.get_data("addtl_flow", self.addtl_id)
                 random_id = random_choice()
 
         return random_id
 
+    def get_follows(self):
+        return print(self.follow)
+
 
 class GiveawayClass(GiveawayFunc):
-    async def start_giveaway(self):
+    def start_giveaway(self):
+        print("starting...")
         # create giveaway and begin calling twitter API to accumulate all followers in database
         if self.conditions["follow"]:
             self.get_data("follow", self.author_id)
@@ -194,6 +191,7 @@ class GiveawayClass(GiveawayFunc):
             if winner not in self.winners:
                 self.winners.append(winner)
             i += 1
+        #             print(i)
 
         self.giveaway["winners"] = self.winners
 
@@ -204,19 +202,3 @@ class GiveawayClass(GiveawayFunc):
 
     def end_giveaway():
         pass
-
-
-# +
-conditions = {
-    "retweet": True,
-    "likes_tweet": True,
-    "follow": True,
-    "addtl_follow": False,
-}
-
-giveaway = {
-    "tweet_id": 1489647967699185667,
-    "conditions": conditions,
-    "addtl_username": None,
-}
-tst = GiveawayClass(giveaway)
